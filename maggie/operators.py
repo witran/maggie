@@ -137,7 +137,7 @@ def clamp(a, a_min, a_max):
         f_min = (node.value > a_min) if a_min is not None else True
         f_max = (node.value < a_max) if a_max is not None else True
         return unbroadcast(
-            out.grad * np.where(np.logical_and(f_min, f_max), 1, 0,),
+            out.grad * np.logical_and(f_min, f_max).astype('float'),
             node.value.shape,
         )
 
