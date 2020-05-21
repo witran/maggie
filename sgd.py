@@ -1,5 +1,5 @@
 import numpy as np
-from autograd import Node
+from maggie import Node
 import torch
 import time
 

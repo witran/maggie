@@ -61,10 +61,10 @@ def train(x_train, y_train):
     y_train = np.eye(10)[y_train]
 
     # model
-    w1 = vg.Node(np.random.randn(784, 100) / 28, requires_grad=True)
-    b1 = vg.Node(np.zeros(100), requires_grad=True)
-    w2 = tg.Node(np.random.randn(100, 10) / 10, requires_grad=True)
-    b2 = tg.Node(np.zeros(10), requires_grad=True)
+    w1 = mg.Node(np.random.randn(784, 100) / 28, requires_grad=True)
+    b1 = mg.Node(np.zeros(100), requires_grad=True)
+    w2 = mg.Node(np.random.randn(100, 10) / 10, requires_grad=True)
+    b2 = mg.Node(np.zeros(10), requires_grad=True)
 
     def model(x):
         x = x @ w1 + b1
@@ -90,8 +90,8 @@ def train(x_train, y_train):
         for i in range((n - 1) // bs + 1):
             s = i * bs
             e = (i + 1) * bs
-            xb = tg.Node(x_train[s:e])
-            yb = tg.Node(y_train[s:e])
+            xb = mg.Node(x_train[s:e])
+            yb = mg.Node(y_train[s:e])
 
             y = model(xb)
             l = loss(y, yb)
