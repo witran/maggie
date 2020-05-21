@@ -3,6 +3,8 @@ from autograd import Node
 import torch
 import time
 
+""" compare a simple gradient descent loop with torch """
+
 
 def tg_grad_descent(data, initial_params, alpha, n_iterations):
     x = Node(data[0].copy())

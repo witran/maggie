@@ -1,3 +1,5 @@
+import ..core as core
+
 """ layers """
 
 
@@ -25,6 +27,9 @@ def softmax(t):
     return t.exp() / t.exp().sum(dim=-1, keepdim=True)
 
 
+""" rnns """
+
+
 def rnn():
     pass
 
@@ -33,7 +38,7 @@ def gru():
     pass
 
 
-def lstm():
+def lstm(params, sequence):
     pass
 
 

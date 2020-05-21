@@ -42,11 +42,8 @@ class Node:
         self.grad = np.ones(self.value.shape)
 
         for node in reversed(topo):
-            # print(node._op, node.grad)
             for in_node in node._inputs:
                 if in_node in grad_required:
-                    # print(node._op, in_node, node._inputs,
-                    #   node._backward(in_node))
                     in_node.grad += node._backward(in_node)
 
         return params

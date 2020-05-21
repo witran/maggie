@@ -4,9 +4,8 @@ import pickle
 import gzip
 import numpy as np
 from matplotlib import pyplot as plt
-import autograd as ag
-from autograd import Node
-# from autograd.vis import draw_dot
+import maggie as mg
+from maggie import Node
 
 
 def fetch():
@@ -54,14 +53,7 @@ def softmax(t):
 
 
 def nll_loss(y, y_train):
-    return (-(y * y_train).sum(dim=1).log()).sum() / y_train.size()[0]
-
-
-def cce_loss(y, y_train):
-    return -(
-        (y_train * y).sum(dim=1).log() +
-        ((1 - y_train()) * (1 - y)).sum(dim=1).log()
-    ).sum() / y_train.size()[0]
+    return -(y * y_train).sum(dim=1).log().sum() / y_train.size()[0]
 
 
 def train(x_train, y_train):
@@ -69,20 +61,20 @@ def train(x_train, y_train):
     y_train = np.eye(10)[y_train]
 
     # model
-    w1 = ag.Node(np.random.randn(784, 100) / 28, requires_grad=True)
-    b1 = ag.Node(np.zeros(100), requires_grad=True)
-    w2 = ag.Node(np.random.randn(100, 10) / 10, requires_grad=True)
-    b2 = ag.Node(np.zeros(10), requires_grad=True)
+    w1 = vg.Node(np.random.randn(784, 100) / 28, requires_grad=True)
+    b1 = vg.Node(np.zeros(100), requires_grad=True)
+    w2 = tg.Node(np.random.randn(100, 10) / 10, requires_grad=True)
+    b2 = tg.Node(np.zeros(10), requires_grad=True)
 
     def model(x):
         x = x @ w1 + b1
         x = x.clamp(0, None)
         x = x @ w2 + b2
-        x = ag.softmax(x)
+        x = softmax(x)
         return x
 
     # loss
-    loss = ag.nll_loss
+    loss = nll_loss
 
     # hyperparams
     bs = 64
@@ -98,8 +90,8 @@ def train(x_train, y_train):
         for i in range((n - 1) // bs + 1):
             s = i * bs
             e = (i + 1) * bs
-            xb = ag.Node(x_train[s:e])
-            yb = ag.Node(y_train[s:e])
+            xb = tg.Node(x_train[s:e])
+            yb = tg.Node(y_train[s:e])
 
             y = model(xb)
             l = loss(y, yb)
