@@ -28,15 +28,18 @@ class Agent():
         self.priority_epsilon = kwargs["priority_epsilon"]
         self.priority_alpha = kwargs["priority_alpha"]
 
-        self.n_iterations = kwargs["n_iterations"]
-        self.n_play_iterations = kwargs["n_play_iterations"]
         self.store_size = kwargs["store_size"]
 
+        self.n_steps = kwargs["n_steps"]
+        self.target_update_interval = kwargs["target_update_interval"]
+        self.n_steps_to_start_training = kwargs["n_steps_to_start_training"]
+        self.demo_interval = kwargs["demo_interval"]
+        self.log_interval = kwargs["log_interval"]
+
         self.learning_rate = kwargs["learning_rate"] or 0.00025
-        self.n_learn_iterations = kwargs["n_learn_iterations"]
         self.batch_size = kwargs["batch_size"] or 1 << 15
         self.epochs = kwargs["epochs"] or 1
-        self.mini_batch_size = kwargs["mini_batch_size"] or 1 << 10
+        # self.mini_batch_size = kwargs["mini_batch_size"] or 1 << 10
 
 
 class Store():
@@ -52,9 +55,12 @@ class Store():
 
     def sample(self, batch_size):
         # sample_size = min(batch_size, len(self.buffer))
-        indexes = np.random.choice(
-            np.arange(len(self.buffer)), size=batch_size)
-        return np.array(self.buffer)[indexes]
+        # indexes = np.random.choice(
+        #     np.arange(len(self.buffer)), size=batch_size)
+        batch = []
+        for i in range(batch_size):
+            batch.append(self.buffer[np.random.randint(len(self.buffer))])
+        return np.array(batch)
 
     def update_priority(self, items, priorities):
         pass
@@ -82,48 +88,87 @@ def learn(env, agent):
         nn.ReLU(),
         nn.Linear(128, output_size)
     )
+    qnet_target = deepcopy(qnet)
+
+    # optimizer = optim.Adam(qnet.parameters(), lr=agent.learning_rate)
+    optimizer = optim.RMSprop(qnet.parameters(), lr=agent.learning_rate)
+
     store = Store(agent.store_size)
+
+    s = env.reset()
+    step = 0
+    r_sum = 0
+    n_episodes = 0
+    r_sum_window = []
+    r_sum_window_length = 10
+    loss = 0
 
     curve = []
 
-    for i in range(agent.n_iterations):
-        # print('----- iteration #{} -----'.format(i))
-        # actor
-        avg_reward = 0
-        for j in range(agent.n_play_iterations):
-            episode, priority, reward = sample_episode(env, agent, qnet)
-            for k in range(len(episode)):
-                store.add(episode[k], priority[k])
+    for i in range(agent.n_steps):
+        # act & store
+        a, s_next, r, done = act(env, agent, qnet, s, step)
+        store.add((s, a, r, s_next, done), 0)
 
-            avg_reward += ((1 / (j + 1)) * (reward - avg_reward))
+        # loop
+        if done:
+            # for logging
+            n_episodes += 1
+            # avg_reward -= (1 / (n_episodes) * (r_sum - avg_reward))
+            if len(r_sum_window) >= r_sum_window_length:
+                del r_sum_window[0]
+            r_sum_window.append(r_sum)
 
-        # learner
-        loss = train(qnet, store, agent)
+            s = env.reset()
+            r_sum = 0
+            step = 0
+        else:
+            s = s_next
+            r_sum += r
+            step += 1
 
-        # sample play
+        # learn
+        if i > agent.n_steps_to_start_training:
+            loss = train(qnet, qnet_target, optimizer, store, agent)
 
-        # avg_reward = 0
-        # for j in range(agent.n_play_iterations):
-        #     reward = play(env, agent, qnet)
-        #     avg_reward += ((1 / j) * (reward - avg_reward))
+        # copy net every steps_to_target_update
+        if (i + 1) % agent.target_update_interval:
+            qnet_target = deepcopy(qnet)
 
-        curve.append((loss, avg_reward))
-
-        if i % 50 == 0:
+        # debug on interval
+        if step == 1 and (n_episodes + 1) % agent.demo_interval == 0:
+            print("----- DEMO ----")
             last_episode_reward = play(env, agent, qnet, render=True)
             print("last episode reward", last_episode_reward)
+            print("---------------")
 
-        if i % 20 == 0:
-            print("iteration #{}, store size: {}, loss: {}, avg_reward: {}".format(
-                i, len(store.buffer), loss, avg_reward))
-            last_episode_reward = play(env, agent, qnet, render=False)
-            print("last episode reward", last_episode_reward)
+        if (i + 1) % agent.log_interval == 0:
+            print("-----")
+            print("step #{}, num episodes played: {}, store size: {} \nloss: {}, avg_reward last {} episodes: {}".format(
+                i + 1, n_episodes, len(store.buffer), loss, len(r_sum_window), sum(r_sum_window) / len(r_sum_window)))
+
+            curve.append(sum(r_sum_window) / len(r_sum_window))
 
     return qnet, curve
 
 
+def act(env, agent, qnet, s, current_step):
+    max_step = 1000
+    q = qnet(torch.tensor(s).float())
+    pi = softmax_policy(
+        q, agent.softmax_temperature).detach().numpy()
+    a = sample_action(pi)
+    s_next, r, done, info = env.step(a)
+
+    if current_step > max_step:
+        done = True
+        r = -1000
+
+    return a, s_next, r, done
+
+
 def play(env, agent, qnet, render=False):
-    max_step = 400
+    max_step = 1000
     step = 0
     done = False
     s = env.reset()
@@ -147,40 +192,6 @@ def play(env, agent, qnet, render=False):
     return r_sum
 
 
-def sample_episode(env, agent, qnet):
-    max_step = 400
-    step = 0
-    total_reward = 0
-
-    episode = []
-    priority = []
-
-    s = env.reset()
-
-    while True:
-        # qnet.eval()
-        q = qnet(torch.tensor(s).float())
-        pi = softmax_policy(
-            q, agent.softmax_temperature).detach().numpy()
-        a = sample_action(pi)
-        s_next, r, done, info = env.step(a)
-        # print(type(s_next), type(r), type(done), type(info))
-        episode.append((s, a, r, s_next, 1. if done else 0.))
-        priority.append(0)
-        s = s_next
-        step += 1
-        total_reward += r
-
-        if done:
-            break
-        elif step == max_step - 1:
-            episode.append((s, a, -100, s_next, True))
-            priority.append(0)
-            break
-
-    return episode, priority, total_reward
-
-
 def sample_action(pi):
     return np.random.choice(np.arange(len(pi)), p=pi).item()
 
@@ -194,65 +205,62 @@ def softmax_policy(q_values, tau=1.):
     return pi
 
 
-# def epsilon_policy(q_values, epsilon_max, epsilon_decay, epsilon_min, step):
+# def epsilon_policy(q_values, epsilon_max, epsilon_min, epsilon_decay, step):
 #     epsilon = MIN_EPSILON + (MAX_EPSILON - MIN_EPSILON) * \
 #         math.exp(-LAMBDA * self.steps)
 #     pass
 
 
-def train(qnet, store, agent):
+def train(qnet, qnet_target, optimizer, store, agent):
     discount = agent.discount
     batch_size = agent.batch_size
-    mbs = agent.mini_batch_size
-    n_learn_iterations = agent.n_learn_iterations
+    # mbs = agent.mini_batch_size
     epochs = agent.epochs
-    lr = agent.learning_rate
 
     # loss_fn = mg.nn.huber_loss
     # loss_fn = torch.nn.L1Loss
     loss_fn = torch.nn.MSELoss()
     loss_sum = 0
 
-    for _ in range(n_learn_iterations):
-        samples = store.sample(batch_size)
-        base_qnet = deepcopy(qnet)
-        optimizer = optim.Adam(qnet.parameters(), lr=lr)
-        for epoch in range(epochs):
-            loss_sum = 0
-            for i in range(batch_size // mbs):
-                start = i * mbs
-                end = (i + 1) * mbs
+    samples = store.sample(batch_size)
+    for epoch in range(epochs):
+        loss_sum = 0
+        # for i in range(batch_size // mbs):
+        # start = i * batch_size
+        # end = (i + 1) * batch_size
 
-                s, a, r, s_next, done = samples[start:end].T
-                s, r, s_next, done = map(
-                    lambda arr: torch.tensor(np.vstack(arr)).float(),
-                    (s, r, s_next, done))
-                a = torch.tensor(np.vstack(a))
-                # print(s.shape, a.shape, r.shape, s_next.shape, done.shape)
+        # TODO: cleaner code
+        # s, a, r, s_next, done = samples[start:end].T
+        s, a, r, s_next, done = samples.T
+        s, r, s_next, done = map(
+            lambda arr: torch.tensor(np.vstack(arr)).float(),
+            (s, r, s_next, done))
+        a = torch.tensor(np.vstack(a))
 
-                # TODO: change to maggie
+        # TODO: change to maggie
 
-                # compute delta
-                q_values_next = base_qnet(s_next)
-                pi = softmax_policy(q_values_next)
-                bootstrap_term = (
-                    pi * q_values_next
-                ).sum(dim=-1, keepdim=True) * (1 - done)
+        # compute delta
+        q_values_next = qnet_target(s_next)
+        pi = softmax_policy(q_values_next)
+        bootstrap_term = (
+            pi * q_values_next
+        ).sum(dim=-1, keepdim=True) * (1 - done)
 
-                q = qnet(s)
+        q = qnet(s)
 
-                indexes = torch.arange(q.shape[0]) * q.shape[1] + a.squeeze()
-                q_a = q.take(indexes)
-                q_a_target = (r + discount * bootstrap_term).squeeze()
+        indexes = torch.arange(q.shape[0]) * q.shape[1] + a.squeeze()
 
-                loss = loss_fn(q_a, q_a_target)
-                loss.backward()
+        q_a = q.take(indexes)
+        q_a_target = (r + discount * bootstrap_term).squeeze()
 
-                loss_sum += loss.item()
+        loss = loss_fn(q_a, q_a_target)
+        loss.backward()
 
-                optimizer.step()
-                optimizer.zero_grad()
+        loss_sum += loss.item()
 
-            # print("epoch {}, loss: {}".format(epoch, loss_sum))
+        optimizer.step()
+        optimizer.zero_grad()
+
+        # print("epoch {}, loss: {}".format(epoch, loss_sum))
 
     return loss_sum
