@@ -1,5 +1,6 @@
 __pycache__/
 venv/
 data/
+models/
 .vscode
 .ipynb_checkpoints/
