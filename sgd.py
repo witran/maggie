@@ -6,7 +6,7 @@ import time
 """ compare a simple gradient descent loop with torch """
 
 
-def tg_grad_descent(data, initial_params, alpha, n_iterations):
+def maggie_grad_descent(data, initial_params, alpha, n_iterations):
     x = Node(data[0].copy())
     y = Node(data[1].copy())
 
@@ -30,7 +30,7 @@ def tg_grad_descent(data, initial_params, alpha, n_iterations):
         for param in params:
             param.value -= alpha * param.grad
 
-    print("tinygrad grad descent", time.time() - start, "s")
+    print("maggie grad descent", time.time() - start, "s")
 
     return list(map(lambda node: node.value, [w1, b1, w2, b2]))
 
@@ -84,7 +84,7 @@ def test_gradient_descent():
     alpha = 0.01
     n_iterations = 5000
 
-    tg_trained_params = tg_grad_descent(
+    tg_trained_params = maggie_grad_descent(
         data, initial_params, alpha, n_iterations)
     torch_trained_params = torch_grad_descent(
         data, initial_params, alpha, n_iterations)
