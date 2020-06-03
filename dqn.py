@@ -7,15 +7,6 @@ from torch import nn
 from torch import optim
 
 
-# TODO:
-# environment
-# state tensorr
-# net model - linear, dimension based on env
-# double, dueling, maxq
-# exp store:
-#   v1 - array random sample
-#   v2 - stochastic priority tree, update priority after learning
-
 class Agent():
     def __init__(self, **kwargs):
         self.discount = kwargs["discount"]
@@ -31,21 +22,30 @@ class Agent():
         self.store_size = kwargs["store_size"]
 
         self.n_steps = kwargs["n_steps"]
+        self.n_episodes = kwargs["n_episodes"]
         self.target_update_interval = kwargs["target_update_interval"]
         self.n_steps_to_start_training = kwargs["n_steps_to_start_training"]
         self.demo_interval = kwargs["demo_interval"]
         self.log_interval = kwargs["log_interval"]
 
-        self.learning_rate = kwargs["learning_rate"] or 0.00025
-        self.batch_size = kwargs["batch_size"] or 1 << 15
-        self.epochs = kwargs["epochs"] or 1
-        # self.mini_batch_size = kwargs["mini_batch_size"] or 1 << 10
+        self.timeout = kwargs["timeout"]
+        self.timeout_reward = kwargs["timeout_reward"]
+
+        self.optim_lr = kwargs["optim_lr"]
+        self.optim_beta_m = kwargs["optim_beta_m"]
+        self.optim_beta_v = kwargs["optim_beta_v"]
+        self.optim_epsilon = kwargs["optim_epsilon"]
+
+        self.n_batches = kwargs["n_batches"]
+        self.batch_size = kwargs["batch_size"]
+        self.epochs = kwargs["epochs"]
 
 
 class Store():
     def __init__(self, max_size=1e6):
         self.buffer = []
         self.max_size = max_size
+        self.rand_generator = np.random.RandomState(1)
 
     def add(self, item, priority):
         if len(self.buffer) == self.max_size:
@@ -54,16 +54,13 @@ class Store():
         self.buffer.append(item)
 
     def sample(self, batch_size):
-        # sample_size = min(batch_size, len(self.buffer))
-        # indexes = np.random.choice(
-        #     np.arange(len(self.buffer)), size=batch_size)
-        batch = []
-        for i in range(batch_size):
-            batch.append(self.buffer[np.random.randint(len(self.buffer))])
-        return np.array(batch)
-
-    def update_priority(self, items, priorities):
-        pass
+        idxs = self.rand_generator.choice(
+            np.arange(len(self.buffer)), size=batch_size)
+        return np.array([self.buffer[idx] for idx in idxs])
+        # batch = []
+        # for i in range(batch_size):
+        #     batch.append(self.buffer[np.random.randint(len(self.buffer))])
+        # return np.array(batch)
 
 
 # class Net(mg.Module):
@@ -81,17 +78,31 @@ def learn(env, agent):
 
     print("input:{}, output:{}".format(input_size, output_size))
 
-    qnet = nn.Sequential(
-        nn.Linear(input_size, 128),
-        nn.ReLU(),
-        nn.Linear(128, 128),
-        nn.ReLU(),
-        nn.Linear(128, output_size)
-    )
-    qnet_target = deepcopy(qnet)
+    l1 = nn.Linear(input_size, 256)
+    l2 = nn.Linear(256, output_size)
+
+    torch.nn.init.orthogonal_(l1.weight)
+    torch.nn.init.zeros_(l1.bias)
+    torch.nn.init.orthogonal_(l2.weight)
+    torch.nn.init.zeros_(l2.bias)
+    qnet = nn.Sequential(l1, nn.ReLU(), l2)
+
+    # qnet = nn.Sequential(
+    #     nn.Linear(input_size, 128),
+    #     nn.ReLU(),
+    #     nn.Linear(128, 128),
+    #     nn.ReLU(),
+    #     nn.Linear(128, output_size))
+    # qnet_target = deepcopy(qnet)
 
     # optimizer = optim.Adam(qnet.parameters(), lr=agent.learning_rate)
-    optimizer = optim.RMSprop(qnet.parameters(), lr=agent.learning_rate)
+    # optimizer = optim.RMSprop(qnet.parameters(), lr=agent.learning_rate)
+    optimizer = optim.Adam(qnet.parameters(),
+                           lr=agent.optim_lr,
+                           betas=(agent.optim_beta_m,
+                                  agent.optim_beta_v),
+                           eps=agent.optim_epsilon
+                           )
 
     store = Store(agent.store_size)
 
@@ -103,7 +114,8 @@ def learn(env, agent):
     r_sum_window_length = 10
     loss = 0
 
-    curve = []
+    reward_history = []
+    loss_history = []
 
     for i in range(agent.n_steps):
         # act & store
@@ -114,7 +126,7 @@ def learn(env, agent):
         if done:
             # for logging
             n_episodes += 1
-            # avg_reward -= (1 / (n_episodes) * (r_sum - avg_reward))
+            r_sum += r
             if len(r_sum_window) >= r_sum_window_length:
                 del r_sum_window[0]
             r_sum_window.append(r_sum)
@@ -122,47 +134,63 @@ def learn(env, agent):
             s = env.reset()
             r_sum = 0
             step = 0
+
+            if n_episodes == agent.n_episodes:
+                break
+
         else:
             s = s_next
             r_sum += r
             step += 1
 
         # learn
-        if i > agent.n_steps_to_start_training:
-            loss = train(qnet, qnet_target, optimizer, store, agent)
-
-        # copy net every steps_to_target_update
-        if (i + 1) % agent.target_update_interval:
+        if i > agent.batch_size:
             qnet_target = deepcopy(qnet)
+            for _ in range(agent.n_batches):
+                loss = train(qnet, qnet_target, optimizer, store, agent)
+                loss_history.append(loss)
 
-        # debug on interval
-        if step == 1 and (n_episodes + 1) % agent.demo_interval == 0:
-            print("----- DEMO ----")
-            last_episode_reward = play(env, agent, qnet, render=True)
-            print("last episode reward", last_episode_reward)
-            print("---------------")
+            # copy net every steps_to_target_update
+            # if (i + 1) % agent.target_update_interval:
+            #     qnet_target = deepcopy(qnet)
 
-        if (i + 1) % agent.log_interval == 0:
-            print("-----")
-            print("step #{}, num episodes played: {}, store size: {} \nloss: {}, avg_reward last {} episodes: {}".format(
-                i + 1, n_episodes, len(store.buffer), loss, len(r_sum_window), sum(r_sum_window) / len(r_sum_window)))
+            # demo on interval
+            if step == 0 and (n_episodes + 1) % agent.demo_interval == 0:
+                print("----- DEMO ----")
+                last_episode_reward = play(env, agent, qnet, render=True)
+                print("last episode reward", last_episode_reward)
+                print("---------------")
 
-            curve.append(sum(r_sum_window) / len(r_sum_window))
+            # print debug on interval
+            if (i + 1) % agent.log_interval == 0:
+                print("-----")
+                print("step #{}, num episodes played: {}, store size: {} \nloss: {}, last {} episodes avg={} best={} worst={}".format(
+                    i + 1,
+                    n_episodes,
+                    len(store.buffer),
+                    round(loss, 4),
+                    len(r_sum_window),
+                    round(sum(r_sum_window) / len(r_sum_window), 4),
+                    round(max(r_sum_window), 4),
+                    round(min(r_sum_window), 4)
+                ))
 
-    return qnet, curve
+                reward_history.append(sum(r_sum_window) / len(r_sum_window))
+
+    return qnet, reward_history, loss_history
 
 
 def act(env, agent, qnet, s, current_step):
-    max_step = 1000
     q = qnet(torch.tensor(s).float())
     pi = softmax_policy(
         q, agent.softmax_temperature).detach().numpy()
+    # print(pi)
     a = sample_action(pi)
     s_next, r, done, info = env.step(a)
 
-    if current_step > max_step:
+    if current_step > agent.timeout:
         done = True
-        r = -1000
+        # r = agent.timeout_reward
 
     return a, s_next, r, done
 
@@ -188,6 +216,8 @@ def play(env, agent, qnet, render=False):
 
     if render:
         print(actions)
+
+    s = env.reset()
 
     return r_sum
 
@@ -229,15 +259,13 @@ def train(qnet, qnet_target, optimizer, store, agent):
         # start = i * batch_size
         # end = (i + 1) * batch_size
 
-        # TODO: cleaner code
+        # TODO: cleaner code & change to maggie
         # s, a, r, s_next, done = samples[start:end].T
         s, a, r, s_next, done = samples.T
         s, r, s_next, done = map(
             lambda arr: torch.tensor(np.vstack(arr)).float(),
             (s, r, s_next, done))
         a = torch.tensor(np.vstack(a))
-
-        # TODO: change to maggie
 
         # compute delta
         q_values_next = qnet_target(s_next)
@@ -246,11 +274,12 @@ def train(qnet, qnet_target, optimizer, store, agent):
             pi * q_values_next
         ).sum(dim=-1, keepdim=True) * (1 - done)
 
-        q = qnet(s)
+        q_values = qnet(s)
 
-        indexes = torch.arange(q.shape[0]) * q.shape[1] + a.squeeze()
+        indexes = torch.arange(
+            q_values.shape[0]) * q_values.shape[1] + a.squeeze()
 
-        q_a = q.take(indexes)
+        q_a = q_values.take(indexes)
         q_a_target = (r + discount * bootstrap_term).squeeze()
 
         loss = loss_fn(q_a, q_a_target)
